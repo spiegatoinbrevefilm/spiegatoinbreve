@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Film, Star, Play, Info, ChevronRight, Menu, X, TrendingUp, Calendar, Clock } from 'lucide-react';
+import { Search, Film, Star, Play, Info, ChevronRight, Menu, X, TrendingUp, Heart, Clock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from '@google/genai';
 import Markdown from 'react-markdown';
@@ -60,10 +60,13 @@ export default function App() {
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'search' | 'url' | 'admin'>('search');
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [currentIndex, setCurrentIndex] = useState(0);
 
   // Form state for admin
-  const [newMovie, setNewMovie] = useState<Partial<Movie>>({
+  const [newMovie, setNewMovie] = useState<any>({
     title: '',
     year: '',
     rating: '',
@@ -71,7 +74,9 @@ export default function App() {
     description: '',
     director: '',
     cast: [],
-    trailer_url: ''
+    trailer_url: '',
+    genre: '',
+    is_featured: false
   });
 
   useEffect(() => {
@@ -88,37 +93,108 @@ export default function App() {
     }
   };
 
-  const handleAddMovie = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const movieData = {
+  const heroMovies = movies.filter(m => m.is_featured).length > 0 
+    ? movies.filter(m => m.is_featured) 
+    : (movies.length > 0 ? [movies[0]] : MOCK_MOVIES.slice(0, 1));
+
+  useEffect(() => {
+    if (heroMovies.length <= 1) {
+      if (currentIndex !== 0) setCurrentIndex(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setCurrentIndex(prev => (prev + 1) % heroMovies.length);
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [heroMovies.length, currentIndex]);
+
+  const handleSaveMovie = async (eOrMovie?: React.FormEvent | Movie) => {
+    if (eOrMovie && 'preventDefault' in eOrMovie) {
+      eOrMovie.preventDefault();
+    }
+    
+    const isDirectUpdate = eOrMovie && !('preventDefault' in eOrMovie);
+    const movieToSave = isDirectUpdate ? (eOrMovie as Movie) : {
       ...newMovie,
-      id: Date.now().toString(),
+      id: isEditing ? editingId : Date.now().toString(),
       cast: typeof newMovie.cast === 'string' ? (newMovie.cast as string).split(',').map(s => s.trim()) : newMovie.cast
     };
 
     try {
-      const res = await fetch('/api/movies', {
-        method: 'POST',
+      const url = (isEditing || isDirectUpdate) ? `/api/movies/${movieToSave.id}` : '/api/movies';
+      const method = (isEditing || isDirectUpdate) ? 'PUT' : 'POST';
+      
+      const res = await fetch(url, {
+        method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(movieData)
+        body: JSON.stringify(movieToSave)
       });
+      
+      const result = await res.json();
+      
       if (res.ok) {
-        setNewMovie({ title: '', year: '', rating: '', image: '', description: '', director: '', cast: [], trailer_url: '' });
+        if (!isDirectUpdate) {
+          setNewMovie({ title: '', year: '', rating: '', image: '', description: '', director: '', cast: [], trailer_url: '', genre: '', is_featured: false });
+          setIsEditing(false);
+          setEditingId(null);
+        }
         fetchMovies();
-        alert('Movie added successfully!');
+        if (!isDirectUpdate) {
+          alert(isEditing ? 'Movie updated successfully!' : 'Movie added successfully!');
+        }
+      } else {
+        alert(`Error: ${result.error || 'Failed to save movie'}`);
       }
     } catch (err) {
-      console.error('Failed to add movie:', err);
+      console.error('Failed to save movie:', err);
+      alert('Network error. Please check if the server is running.');
     }
   };
 
+  const handleEditMovie = (movie: Movie) => {
+    setNewMovie({
+      ...movie,
+      cast: Array.isArray(movie.cast) ? movie.cast.join(', ') : movie.cast
+    });
+    setIsEditing(true);
+    setEditingId(movie.id);
+    setActiveTab('admin');
+  };
+
   const handleDeleteMovie = async (id: string) => {
-    if (!confirm('Are you sure?')) return;
+    console.log("CLIENT: Delete requested for ID:", id);
+    if (!id) {
+      console.error("CLIENT: No ID provided for deletion");
+      return;
+    }
+    
+    // Optimistic update
+    const previousMovies = [...movies];
+    setMovies(prev => prev.filter(m => m.id !== id));
+    
     try {
-      await fetch(`/api/movies/${id}`, { method: 'DELETE' });
-      fetchMovies();
+      // Using POST as a workaround for environments that block DELETE
+      const res = await fetch(`/api/movies/${id}/delete`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (res.ok) {
+        console.log("CLIENT: Delete success for ID:", id);
+        // Refresh to be sure
+        fetchMovies();
+      } else {
+        const errorData = await res.json();
+        console.error("CLIENT: Delete failed:", errorData.error);
+        alert(`Error: ${errorData.error || 'Failed to delete movie'}`);
+        // Rollback
+        setMovies(previousMovies);
+      }
     } catch (err) {
-      console.error('Failed to delete movie:', err);
+      console.error('CLIENT: Delete network error:', err);
+      alert('Network error while deleting.');
+      // Rollback
+      setMovies(previousMovies);
     }
   };
 
@@ -132,25 +208,48 @@ export default function App() {
     
     try {
       const prompt = activeTab === 'url' 
-        ? `Extract all movie details from this URL: ${query}. Include Title, Year, Rating, Director, Cast, and a detailed Plot summary. Format the response clearly.`
+        ? `Extract movie details from this URL: ${query}. 
+           CRITICAL: You must return ONLY a raw JSON object. DO NOT use markdown code blocks (no \`\`\`json). DO NOT include any introductory or concluding text. Just the raw JSON string.
+           Fields: title, year, rating, image, description, director, cast (array of strings), trailer_url, genre.
+           is_featured should be false.
+           If a field is missing, use an empty string.`
         : `Search for the movie "${query}" on portals like MyMovies.it, IMDb, and ComingSoon.it. Provide a comprehensive summary, the current rating consensus, and why it's recommended.`;
 
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
         config: {
-          tools: activeTab === 'url' ? [{ urlContext: {} }] : [{ googleSearch: {} }]
+          tools: activeTab === 'url' ? [{ urlContext: {} }] : [{ googleSearch: {} }],
+          responseMimeType: activeTab === 'url' ? "application/json" : "text/plain"
         }
       });
       
-      const text = response.text || 'No results found.';
-      setAiResponse(text);
-
-      // Simple heuristic to update the UI if we find a match in our "database" or create a temporary one
+      console.log("CLIENT: Raw AI Response:", response.text);
+      
       if (activeTab === 'url') {
-        // In a real app, we'd use structured output to create a new Movie object
-        // For now, we'll show the AI response as the primary detail
+        try {
+          // Clean the response text from potential markdown code blocks
+          const cleanedText = response.text.replace(/```json\n?|```/g, '').trim();
+          console.log("CLIENT: Cleaned JSON text:", cleanedText);
+          const movieData = JSON.parse(cleanedText);
+          
+          setNewMovie({
+            ...movieData,
+            cast: Array.isArray(movieData.cast) ? movieData.cast.join(', ') : (movieData.cast || '')
+          });
+          setActiveTab('admin');
+          setIsEditing(false);
+          setEditingId(null);
+          setAiResponse(null); // Clear any previous AI response
+          alert('Data imported! Review and save in the Back Office.');
+        } catch (pErr) {
+          console.error('Parse error:', pErr);
+          // If parsing fails, show the raw response as a summary
+          setAiResponse(response.text);
+          alert('Could not parse structured data, showing summary instead.');
+        }
       } else {
+        setAiResponse(response.text || 'No results found.');
         const filtered = MOCK_MOVIES.filter(m => 
           m.title.toLowerCase().includes(query.toLowerCase())
         );
@@ -235,9 +334,9 @@ export default function App() {
               <div className="lg:col-span-1">
                 <div className="glass p-8 rounded-3xl border border-white/10 sticky top-32">
                   <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
-                    <Film className="text-red-500" size={20} /> Add New Movie
+                    <Film className="text-red-500" size={20} /> {isEditing ? 'Edit Movie' : 'Add New Movie'}
                   </h3>
-                  <form onSubmit={handleAddMovie} className="space-y-4">
+                  <form onSubmit={handleSaveMovie} className="space-y-4">
                     <input
                       type="text"
                       placeholder="Movie Title"
@@ -284,6 +383,13 @@ export default function App() {
                     />
                     <input
                       type="text"
+                      placeholder="Genre (e.g. Action, Drama)"
+                      value={newMovie.genre}
+                      onChange={e => setNewMovie({...newMovie, genre: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
+                    />
+                    <input
+                      type="text"
                       placeholder="Cast (comma separated)"
                       value={Array.isArray(newMovie.cast) ? newMovie.cast.join(', ') : newMovie.cast}
                       onChange={e => setNewMovie({...newMovie, cast: e.target.value})}
@@ -296,9 +402,45 @@ export default function App() {
                       onChange={e => setNewMovie({...newMovie, trailer_url: e.target.value})}
                       className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
                     />
-                    <button type="submit" className="w-full bg-red-600 text-white py-4 rounded-xl font-bold hover:bg-red-700 transition-colors mt-4">
-                      Save to Database
-                    </button>
+                    <label className="flex items-center gap-3 cursor-pointer group p-2 rounded-xl hover:bg-white/5 transition-colors">
+                      <div className="relative">
+                        <input 
+                          type="checkbox" 
+                          className="sr-only" 
+                          checked={newMovie.is_featured}
+                          onChange={e => setNewMovie({...newMovie, is_featured: e.target.checked})}
+                        />
+                        <div className={cn(
+                          "w-10 h-5 rounded-full transition-colors",
+                          newMovie.is_featured ? "bg-red-600" : "bg-white/10"
+                        )}></div>
+                        <div className={cn(
+                          "absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform",
+                          newMovie.is_featured ? "translate-x-5" : "translate-x-0"
+                        )}></div>
+                      </div>
+                      <span className="text-sm font-medium text-white/60 group-hover:text-white transition-colors">
+                        Metti in Home (Preferito)
+                      </span>
+                    </label>
+                    <div className="flex gap-2 mt-4">
+                      <button type="submit" className="flex-1 bg-red-600 text-white py-4 rounded-xl font-bold hover:bg-red-700 transition-colors">
+                        {isEditing ? 'Update Movie' : 'Save to Database'}
+                      </button>
+                      {isEditing && (
+                        <button 
+                          type="button" 
+                          onClick={() => {
+                            setIsEditing(false);
+                            setEditingId(null);
+                            setNewMovie({ title: '', year: '', rating: '', image: '', description: '', director: '', cast: [], trailer_url: '', genre: '' });
+                          }}
+                          className="px-6 bg-white/10 text-white rounded-xl font-bold hover:bg-white/20 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
                   </form>
                 </div>
               </div>
@@ -318,11 +460,21 @@ export default function App() {
                         <h4 className="font-bold text-lg">{movie.title}</h4>
                         <p className="text-white/40 text-sm">{movie.year} • {movie.director}</p>
                       </div>
-                      <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => setSelectedMovie(movie)} className="p-2 hover:bg-white/10 rounded-lg text-white/60 hover:text-white">
+                      <div className="flex gap-2 opacity-100 transition-opacity">
+                        <button onClick={() => handleEditMovie(movie)} className="p-2 hover:bg-white/10 rounded-lg text-white/60 hover:text-white" title="Edit">
+                          <Clock size={18} />
+                        </button>
+                        <button onClick={() => setSelectedMovie(movie)} className="p-2 hover:bg-white/10 rounded-lg text-white/60 hover:text-white" title="Info">
                           <Info size={18} />
                         </button>
-                        <button onClick={() => handleDeleteMovie(movie.id)} className="p-2 hover:bg-red-500/20 rounded-lg text-red-500/60 hover:text-red-500">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteMovie(movie.id);
+                          }} 
+                          className="p-2 bg-red-500/10 hover:bg-red-500/30 rounded-lg text-red-500 transition-all"
+                          title="Delete"
+                        >
                           <X size={18} />
                         </button>
                       </div>
@@ -337,44 +489,77 @@ export default function App() {
         {/* Hero Section */}
         {!searchQuery && !selectedMovie && activeTab !== 'admin' && (
           <section className="relative h-[90vh] w-full overflow-hidden">
-            <div className="absolute inset-0">
-              <img
-                src="https://images.unsplash.com/photo-1536440136628-849c177e76a1?auto=format&fit=crop&q=80&w=2000"
-                alt="Featured Movie"
-                className="w-full h-full object-cover opacity-60"
-                referrerPolicy="no-referrer"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-[#050505] via-transparent to-transparent" />
-              <div className="absolute inset-0 bg-gradient-to-r from-[#050505] via-[#050505]/20 to-transparent" />
-            </div>
+            {(() => {
+              const heroMovie = heroMovies[currentIndex] || heroMovies[0];
 
-            <div className="relative h-full flex flex-col justify-end px-6 pb-24 max-w-7xl mx-auto">
-              <motion.div
-                initial={{ opacity: 0, y: 30 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8 }}
-              >
-                <div className="flex items-center gap-2 mb-4">
-                  <span className="bg-red-600 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Featured</span>
-                  <span className="text-white/60 text-sm font-medium">2024 • Sci-Fi • 2h 46m</span>
+              return (
+                <div className="relative w-full h-full">
+                  <div className="absolute inset-0">
+                    <motion.img
+                      key={heroMovie.id}
+                      initial={{ opacity: 0, scale: 1.1 }}
+                      animate={{ opacity: 0.6, scale: 1 }}
+                      transition={{ duration: 1.5 }}
+                      src={heroMovie.image}
+                      alt={heroMovie.title}
+                      className="w-full h-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#050505] via-transparent to-transparent" />
+                    <div className="absolute inset-0 bg-gradient-to-r from-[#050505] via-[#050505]/20 to-transparent" />
+                  </div>
+
+                  <div className="relative h-full flex flex-col justify-end px-6 pb-24 max-w-7xl mx-auto">
+                    <motion.div
+                      key={heroMovie.id + "-content"}
+                      initial={{ opacity: 0, y: 30 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.8 }}
+                    >
+                      <div className="flex items-center gap-2 mb-4">
+                        <span className="bg-red-600 text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider">Featured</span>
+                        <span className="text-white/60 text-sm font-medium">{heroMovie.year} • {heroMovie.genre || 'Cinema'} • {heroMovie.rating} Rating</span>
+                      </div>
+                      <h2 className="text-6xl md:text-8xl font-display font-bold mb-6 leading-tight">
+                        {heroMovie.title}
+                      </h2>
+                      <p className="text-lg text-white/70 max-w-2xl mb-8 leading-relaxed line-clamp-3">
+                        {heroMovie.description}
+                      </p>
+                      <div className="flex items-center gap-4">
+                        <button 
+                          onClick={() => setSelectedMovie(heroMovie)}
+                          className="bg-white text-black px-8 py-4 rounded-full font-bold flex items-center gap-2 hover:bg-white/90 transition-colors"
+                        >
+                          <Play className="fill-current" size={20} /> Watch Trailer
+                        </button>
+                        <button 
+                          onClick={() => setSelectedMovie(heroMovie)}
+                          className="bg-white/10 backdrop-blur-md text-white px-8 py-4 rounded-full font-bold flex items-center gap-2 hover:bg-white/20 transition-colors border border-white/10"
+                        >
+                          <Info size={20} /> More Info
+                        </button>
+                      </div>
+                    </motion.div>
+                    
+                    {heroMovies.length > 1 && (
+                      <div className="absolute bottom-12 right-6 flex gap-2">
+                        {heroMovies.map((_, idx) => (
+                          <button 
+                            key={idx}
+                            onClick={() => setCurrentIndex(idx)}
+                            className={cn(
+                              "w-2 h-2 rounded-full transition-all",
+                              idx === currentIndex ? "bg-red-600 w-8" : "bg-white/20 hover:bg-white/40"
+                            )}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <h2 className="text-6xl md:text-8xl font-display font-bold mb-6 leading-tight">
-                  DUNE: <br />
-                  <span className="italic text-white/90">PART TWO</span>
-                </h2>
-                <p className="text-lg text-white/70 max-w-2xl mb-8 leading-relaxed">
-                  Paul Atreides unites with Chani and the Fremen while on a warpath of revenge against the conspirators who destroyed his family.
-                </p>
-                <div className="flex items-center gap-4">
-                  <button className="bg-white text-black px-8 py-4 rounded-full font-bold flex items-center gap-2 hover:bg-white/90 transition-colors">
-                    <Play className="fill-current" size={20} /> Watch Trailer
-                  </button>
-                  <button className="bg-white/10 backdrop-blur-md text-white px-8 py-4 rounded-full font-bold flex items-center gap-2 hover:bg-white/20 transition-colors border border-white/10">
-                    <Info size={20} /> More Info
-                  </button>
-                </div>
-              </motion.div>
-            </div>
+              );
+            })()}
           </section>
         )}
 
@@ -422,17 +607,28 @@ export default function App() {
           <section className="px-6 py-12 max-w-7xl mx-auto">
             <div className="flex items-center justify-between mb-8">
               <div className="flex items-center gap-4">
-                <h3 className="text-2xl font-display font-bold">From Your Database</h3>
+                <h3 className="text-2xl font-display font-bold">
+                  {selectedGenre ? `Genre: ${selectedGenre}` : 'From Your Database'}
+                </h3>
                 <div className="flex gap-2">
-                  <button className="text-xs font-bold px-3 py-1 rounded-full bg-white/10 hover:bg-white/20 transition-colors">Movies</button>
+                  <button 
+                    onClick={() => setSelectedGenre(null)}
+                    className={cn(
+                      "text-xs font-bold px-3 py-1 rounded-full transition-colors",
+                      !selectedGenre ? "bg-red-600 text-white" : "bg-white/10 hover:bg-white/20"
+                    )}
+                  >
+                    All
+                  </button>
                 </div>
               </div>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
-              {movies.length > 0 ? movies.map((movie) => (
-                <MovieCard key={movie.id} movie={movie} onClick={() => setSelectedMovie(movie)} />
-              )) : MOCK_MOVIES.map((movie) => (
+              {(selectedGenre 
+                ? movies.filter(m => m.genre?.toLowerCase().includes(selectedGenre.toLowerCase()))
+                : movies.length > 0 ? movies : MOCK_MOVIES
+              ).map((movie) => (
                 <MovieCard key={movie.id} movie={movie} onClick={() => setSelectedMovie(movie)} />
               ))}
             </div>
@@ -444,12 +640,38 @@ export default function App() {
           <section className="px-6 py-12 max-w-7xl mx-auto">
             <h3 className="text-2xl font-display font-bold mb-8">Explore Genres</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 h-[400px]">
-              <GenreCard title="Action" image="https://images.unsplash.com/photo-1533928298208-27ff66555d8d?auto=format&fit=crop&q=80&w=600" className="md:col-span-2" />
-              <GenreCard title="Sci-Fi" image="https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?auto=format&fit=crop&q=80&w=600" />
-              <GenreCard title="Drama" image="https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=600" />
-              <GenreCard title="Horror" image="https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&q=80&w=600" />
-              <GenreCard title="Comedy" image="https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?auto=format&fit=crop&q=80&w=600" className="md:col-span-2" />
-              <GenreCard title="Romance" image="https://images.unsplash.com/photo-1518133910546-b6c2fb7d79e3?auto=format&fit=crop&q=80&w=600" />
+              <GenreCard 
+                title="Action" 
+                image="https://images.unsplash.com/photo-1533928298208-27ff66555d8d?auto=format&fit=crop&q=80&w=600" 
+                className="md:col-span-2" 
+                onClick={() => setSelectedGenre('Action')}
+              />
+              <GenreCard 
+                title="Sci-Fi" 
+                image="https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?auto=format&fit=crop&q=80&w=600" 
+                onClick={() => setSelectedGenre('Sci-Fi')}
+              />
+              <GenreCard 
+                title="Drama" 
+                image="https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=600" 
+                onClick={() => setSelectedGenre('Drama')}
+              />
+              <GenreCard 
+                title="Horror" 
+                image="https://images.unsplash.com/photo-1509248961158-e54f6934749c?auto=format&fit=crop&q=80&w=600" 
+                onClick={() => setSelectedGenre('Horror')}
+              />
+              <GenreCard 
+                title="Comedy" 
+                image="https://images.unsplash.com/photo-1517604931442-7e0c8ed2963c?auto=format&fit=crop&q=80&w=600" 
+                className="md:col-span-2" 
+                onClick={() => setSelectedGenre('Comedy')}
+              />
+              <GenreCard 
+                title="Romance" 
+                image="https://images.unsplash.com/photo-1518133910546-b6c2fb7d79e3?auto=format&fit=crop&q=80&w=600" 
+                onClick={() => setSelectedGenre('Romance')}
+              />
             </div>
           </section>
         )}
@@ -537,11 +759,17 @@ export default function App() {
                     </div>
                   </div>
                   <h2 className="text-4xl md:text-5xl font-display font-bold mb-6">{selectedMovie.title}</h2>
-                  <p className="text-white/60 leading-relaxed mb-8">
-                    {selectedMovie.description}
-                  </p>
+                  <div className="max-h-40 overflow-y-auto mb-8 pr-2 custom-scrollbar">
+                    <p className="text-white/60 leading-relaxed">
+                      {selectedMovie.description}
+                    </p>
+                  </div>
                   
                   <div className="space-y-4 mb-8">
+                    <div className="flex items-center gap-4 text-sm">
+                      <span className="text-white/30 w-20">Genre</span>
+                      <span className="font-medium text-red-500">{selectedMovie.genre || 'N/A'}</span>
+                    </div>
                     <div className="flex items-center gap-4 text-sm">
                       <span className="text-white/30 w-20">Director</span>
                       <span className="font-medium">{selectedMovie.director}</span>
@@ -567,8 +795,19 @@ export default function App() {
                         <Play size={18} className="fill-current" /> Watch Now
                       </button>
                     )}
-                    <button className="p-4 bg-white/5 rounded-xl border border-white/10 hover:bg-white/10 transition-colors">
-                      <Calendar size={18} />
+                    <button 
+                      onClick={() => {
+                        const updatedMovie = { ...selectedMovie, is_featured: !selectedMovie.is_featured };
+                        handleSaveMovie(updatedMovie);
+                        setSelectedMovie(updatedMovie);
+                      }}
+                      className={cn(
+                        "p-4 rounded-xl border transition-all flex items-center justify-center",
+                        selectedMovie.is_featured ? "bg-red-600 border-red-600 text-white" : "bg-white/5 border-white/10 text-white/40 hover:bg-white/10"
+                      )}
+                      title={selectedMovie.is_featured ? "Rimuovi dai Preferiti" : "Aggiungi ai Preferiti"}
+                    >
+                      <Heart size={18} fill={selectedMovie.is_featured ? "currentColor" : "none"} />
                     </button>
                   </div>
                 </div>
@@ -611,9 +850,12 @@ function MovieCard({ movie, onClick }: { movie: Movie; onClick: () => void }) {
   );
 }
 
-function GenreCard({ title, image, className }: { title: string; image: string; className?: string }) {
+function GenreCard({ title, image, className, onClick }: { title: string; image: string; className?: string; onClick: () => void }) {
   return (
-    <div className={cn("relative rounded-2xl overflow-hidden group cursor-pointer border border-white/5", className)}>
+    <div 
+      onClick={onClick}
+      className={cn("relative rounded-2xl overflow-hidden group cursor-pointer border border-white/5", className)}
+    >
       <img 
         src={image} 
         alt={title}
