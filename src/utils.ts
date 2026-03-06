@@ -16,6 +16,7 @@ export interface Movie {
   cast?: string[];
   reviews?: string[];
   trailer_url?: string;
+  video_url?: string;
   genre?: string;
   is_featured?: boolean;
 }

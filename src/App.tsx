@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from '@google/genai';
 import Markdown from 'react-markdown';
 import { cn, Movie } from './utils';
+import { supabase } from './supabase';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -74,7 +75,7 @@ export default function App() {
     description: '',
     director: '',
     cast: [],
-    trailer_url: '',
+    video_url: '',
     genre: '',
     is_featured: false
   });
@@ -85,9 +86,15 @@ export default function App() {
 
   const fetchMovies = async () => {
     try {
-      const res = await fetch('/api/movies');
-      const data = await res.json();
-      setMovies(data);
+      const { data, error } = await supabase
+        .from('movies')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      
+      // Map data if necessary (e.g. cast is stored as JSON or array)
+      setMovies(data || []);
     } catch (err) {
       console.error('Failed to fetch movies:', err);
     }
@@ -116,38 +123,40 @@ export default function App() {
     const isDirectUpdate = eOrMovie && !('preventDefault' in eOrMovie);
     const movieToSave = isDirectUpdate ? (eOrMovie as Movie) : {
       ...newMovie,
-      id: isEditing ? editingId : Date.now().toString(),
       cast: typeof newMovie.cast === 'string' ? (newMovie.cast as string).split(',').map(s => s.trim()) : newMovie.cast
     };
 
+    // Remove id if it's a new movie and we want Supabase to generate it (UUID)
+    const { id, ...dataToSave } = movieToSave;
+    const isUpdating = isEditing || isDirectUpdate;
+
     try {
-      const url = (isEditing || isDirectUpdate) ? `/api/movies/${movieToSave.id}` : '/api/movies';
-      const method = (isEditing || isDirectUpdate) ? 'PUT' : 'POST';
-      
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(movieToSave)
-      });
-      
-      const result = await res.json();
-      
-      if (res.ok) {
-        if (!isDirectUpdate) {
-          setNewMovie({ title: '', year: '', rating: '', image: '', description: '', director: '', cast: [], trailer_url: '', genre: '', is_featured: false });
-          setIsEditing(false);
-          setEditingId(null);
-        }
-        fetchMovies();
-        if (!isDirectUpdate) {
-          alert(isEditing ? 'Movie updated successfully!' : 'Movie added successfully!');
-        }
+      let result;
+      if (isUpdating) {
+        result = await supabase
+          .from('movies')
+          .update(dataToSave)
+          .eq('id', id);
       } else {
-        alert(`Error: ${result.error || 'Failed to save movie'}`);
+        result = await supabase
+          .from('movies')
+          .insert([dataToSave]);
       }
-    } catch (err) {
+
+      if (result.error) throw result.error;
+
+      if (!isDirectUpdate) {
+        setNewMovie({ title: '', year: '', rating: '', image: '', description: '', director: '', cast: [], video_url: '', genre: '', is_featured: false });
+        setIsEditing(false);
+        setEditingId(null);
+      }
+      fetchMovies();
+      if (!isDirectUpdate) {
+        alert(isEditing ? 'Movie updated successfully!' : 'Movie added successfully!');
+      }
+    } catch (err: any) {
       console.error('Failed to save movie:', err);
-      alert('Network error. Please check if the server is running.');
+      alert(`Error: ${err.message || 'Failed to save movie'}`);
     }
   };
 
@@ -168,31 +177,26 @@ export default function App() {
       return;
     }
     
+    const confirmed = window.confirm('Are you sure you want to delete this movie?');
+    if (!confirmed) return;
+
     // Optimistic update
     const previousMovies = [...movies];
     setMovies(prev => prev.filter(m => m.id !== id));
     
     try {
-      // Using POST as a workaround for environments that block DELETE
-      const res = await fetch(`/api/movies/${id}/delete`, { 
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
+      const { error } = await supabase
+        .from('movies')
+        .delete()
+        .eq('id', id);
       
-      if (res.ok) {
-        console.log("CLIENT: Delete success for ID:", id);
-        // Refresh to be sure
-        fetchMovies();
-      } else {
-        const errorData = await res.json();
-        console.error("CLIENT: Delete failed:", errorData.error);
-        alert(`Error: ${errorData.error || 'Failed to delete movie'}`);
-        // Rollback
-        setMovies(previousMovies);
-      }
-    } catch (err) {
-      console.error('CLIENT: Delete network error:', err);
-      alert('Network error while deleting.');
+      if (error) throw error;
+      
+      console.log("CLIENT: Delete success for ID:", id);
+      fetchMovies();
+    } catch (err: any) {
+      console.error('CLIENT: Delete error:', err);
+      alert(`Error: ${err.message || 'Failed to delete movie'}`);
       // Rollback
       setMovies(previousMovies);
     }
@@ -210,7 +214,7 @@ export default function App() {
       const prompt = activeTab === 'url' 
         ? `Extract movie details from this URL: ${query}. 
            CRITICAL: You must return ONLY a raw JSON object. DO NOT use markdown code blocks (no \`\`\`json). DO NOT include any introductory or concluding text. Just the raw JSON string.
-           Fields: title, year, rating, image, description, director, cast (array of strings), trailer_url, genre.
+           Fields: title, year, rating, image, description, director, cast (array of strings), video_url, genre.
            is_featured should be false.
            If a field is missing, use an empty string.`
         : `Search for the movie "${query}" on portals like MyMovies.it, IMDb, and ComingSoon.it. Provide a comprehensive summary, the current rating consensus, and why it's recommended.`;
@@ -397,9 +401,9 @@ export default function App() {
                     />
                     <input
                       type="text"
-                      placeholder="Trailer URL (YouTube)"
-                      value={newMovie.trailer_url}
-                      onChange={e => setNewMovie({...newMovie, trailer_url: e.target.value})}
+                      placeholder="Video URL (Direct link or YouTube)"
+                      value={newMovie.video_url}
+                      onChange={e => setNewMovie({...newMovie, video_url: e.target.value})}
                       className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
                     />
                     <label className="flex items-center gap-3 cursor-pointer group p-2 rounded-xl hover:bg-white/5 transition-colors">
@@ -433,7 +437,7 @@ export default function App() {
                           onClick={() => {
                             setIsEditing(false);
                             setEditingId(null);
-                            setNewMovie({ title: '', year: '', rating: '', image: '', description: '', director: '', cast: [], trailer_url: '', genre: '' });
+                            setNewMovie({ title: '', year: '', rating: '', image: '', description: '', director: '', cast: [], video_url: '', genre: '', is_featured: false });
                           }}
                           className="px-6 bg-white/10 text-white rounded-xl font-bold hover:bg-white/20 transition-colors"
                         >
