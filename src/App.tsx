@@ -51,6 +51,7 @@ const MOCK_MOVIES: Movie[] = [
 ];
 
 export default function App() {
+  const [movies, setMovies] = useState<Movie[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [urlToFetch, setUrlToFetch] = useState('');
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
@@ -58,7 +59,68 @@ export default function App() {
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'search' | 'url'>('search');
+  const [activeTab, setActiveTab] = useState<'search' | 'url' | 'admin'>('search');
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // Form state for admin
+  const [newMovie, setNewMovie] = useState<Partial<Movie>>({
+    title: '',
+    year: '',
+    rating: '',
+    image: '',
+    description: '',
+    director: '',
+    cast: [],
+    trailer_url: ''
+  });
+
+  useEffect(() => {
+    fetchMovies();
+  }, []);
+
+  const fetchMovies = async () => {
+    try {
+      const res = await fetch('/api/movies');
+      const data = await res.json();
+      setMovies(data);
+    } catch (err) {
+      console.error('Failed to fetch movies:', err);
+    }
+  };
+
+  const handleAddMovie = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const movieData = {
+      ...newMovie,
+      id: Date.now().toString(),
+      cast: typeof newMovie.cast === 'string' ? (newMovie.cast as string).split(',').map(s => s.trim()) : newMovie.cast
+    };
+
+    try {
+      const res = await fetch('/api/movies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(movieData)
+      });
+      if (res.ok) {
+        setNewMovie({ title: '', year: '', rating: '', image: '', description: '', director: '', cast: [], trailer_url: '' });
+        fetchMovies();
+        alert('Movie added successfully!');
+      }
+    } catch (err) {
+      console.error('Failed to add movie:', err);
+    }
+  };
+
+  const handleDeleteMovie = async (id: string) => {
+    if (!confirm('Are you sure?')) return;
+    try {
+      await fetch(`/api/movies/${id}`, { method: 'DELETE' });
+      fetchMovies();
+    } catch (err) {
+      console.error('Failed to delete movie:', err);
+    }
+  };
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -113,7 +175,7 @@ export default function App() {
           <div className="hidden md:flex items-center gap-6 text-sm font-medium text-white/60">
             <button onClick={() => setActiveTab('search')} className={cn("hover:text-white transition-colors", activeTab === 'search' && "text-white")}>Search</button>
             <button onClick={() => setActiveTab('url')} className={cn("hover:text-white transition-colors", activeTab === 'url' && "text-white")}>Import from Link</button>
-            <a href="#" className="hover:text-white transition-colors">Reviews</a>
+            <button onClick={() => setActiveTab('admin')} className={cn("hover:text-white transition-colors", activeTab === 'admin' && "text-white")}>Back Office</button>
             <a href="#" className="hover:text-white transition-colors">News</a>
           </div>
         </div>
@@ -158,8 +220,122 @@ export default function App() {
       </AnimatePresence>
 
       <main className="pt-20">
+        {/* Admin Panel */}
+        {activeTab === 'admin' && (
+          <section className="px-6 py-12 max-w-7xl mx-auto">
+            <div className="flex items-center justify-between mb-12">
+              <h2 className="text-4xl font-display font-bold">Back Office</h2>
+              <div className="flex gap-2">
+                <span className="bg-green-500/20 text-green-500 text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider">Database Connected</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
+              {/* Add Movie Form */}
+              <div className="lg:col-span-1">
+                <div className="glass p-8 rounded-3xl border border-white/10 sticky top-32">
+                  <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                    <Film className="text-red-500" size={20} /> Add New Movie
+                  </h3>
+                  <form onSubmit={handleAddMovie} className="space-y-4">
+                    <input
+                      type="text"
+                      placeholder="Movie Title"
+                      value={newMovie.title}
+                      onChange={e => setNewMovie({...newMovie, title: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-red-500/50"
+                      required
+                    />
+                    <div className="grid grid-cols-2 gap-4">
+                      <input
+                        type="text"
+                        placeholder="Year"
+                        value={newMovie.year}
+                        onChange={e => setNewMovie({...newMovie, year: e.target.value})}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Rating (e.g. 8.5)"
+                        value={newMovie.rating}
+                        onChange={e => setNewMovie({...newMovie, rating: e.target.value})}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
+                      />
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Image URL"
+                      value={newMovie.image}
+                      onChange={e => setNewMovie({...newMovie, image: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
+                    />
+                    <textarea
+                      placeholder="Plot Summary"
+                      value={newMovie.description}
+                      onChange={e => setNewMovie({...newMovie, description: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none h-32 resize-none"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Director"
+                      value={newMovie.director}
+                      onChange={e => setNewMovie({...newMovie, director: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Cast (comma separated)"
+                      value={Array.isArray(newMovie.cast) ? newMovie.cast.join(', ') : newMovie.cast}
+                      onChange={e => setNewMovie({...newMovie, cast: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Trailer URL (YouTube)"
+                      value={newMovie.trailer_url}
+                      onChange={e => setNewMovie({...newMovie, trailer_url: e.target.value})}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none"
+                    />
+                    <button type="submit" className="w-full bg-red-600 text-white py-4 rounded-xl font-bold hover:bg-red-700 transition-colors mt-4">
+                      Save to Database
+                    </button>
+                  </form>
+                </div>
+              </div>
+
+              {/* Movie List */}
+              <div className="lg:col-span-2">
+                <div className="grid grid-cols-1 gap-4">
+                  {movies.length === 0 && (
+                    <div className="text-center py-24 glass rounded-3xl border border-dashed border-white/10">
+                      <p className="text-white/40">No movies in database yet.</p>
+                    </div>
+                  )}
+                  {movies.map(movie => (
+                    <div key={movie.id} className="glass p-4 rounded-2xl border border-white/5 flex items-center gap-6 group">
+                      <img src={movie.image} className="w-20 h-28 object-cover rounded-lg" alt="" />
+                      <div className="flex-1">
+                        <h4 className="font-bold text-lg">{movie.title}</h4>
+                        <p className="text-white/40 text-sm">{movie.year} • {movie.director}</p>
+                      </div>
+                      <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => setSelectedMovie(movie)} className="p-2 hover:bg-white/10 rounded-lg text-white/60 hover:text-white">
+                          <Info size={18} />
+                        </button>
+                        <button onClick={() => handleDeleteMovie(movie.id)} className="p-2 hover:bg-red-500/20 rounded-lg text-red-500/60 hover:text-red-500">
+                          <X size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Hero Section */}
-        {!searchQuery && !selectedMovie && (
+        {!searchQuery && !selectedMovie && activeTab !== 'admin' && (
           <section className="relative h-[90vh] w-full overflow-hidden">
             <div className="absolute inset-0">
               <img
@@ -242,23 +418,21 @@ export default function App() {
         )}
 
         {/* Trending Section */}
-        {!searchQuery && (
+        {!searchQuery && activeTab !== 'admin' && (
           <section className="px-6 py-12 max-w-7xl mx-auto">
             <div className="flex items-center justify-between mb-8">
               <div className="flex items-center gap-4">
-                <h3 className="text-2xl font-display font-bold">Trending Now</h3>
+                <h3 className="text-2xl font-display font-bold">From Your Database</h3>
                 <div className="flex gap-2">
                   <button className="text-xs font-bold px-3 py-1 rounded-full bg-white/10 hover:bg-white/20 transition-colors">Movies</button>
-                  <button className="text-xs font-bold px-3 py-1 rounded-full text-white/40 hover:text-white transition-colors">TV Shows</button>
                 </div>
               </div>
-              <a href="#" className="text-red-500 text-sm font-bold flex items-center gap-1 hover:gap-2 transition-all">
-                View All <ChevronRight size={16} />
-              </a>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
-              {MOCK_MOVIES.map((movie) => (
+              {movies.length > 0 ? movies.map((movie) => (
+                <MovieCard key={movie.id} movie={movie} onClick={() => setSelectedMovie(movie)} />
+              )) : MOCK_MOVIES.map((movie) => (
                 <MovieCard key={movie.id} movie={movie} onClick={() => setSelectedMovie(movie)} />
               ))}
             </div>
@@ -266,7 +440,7 @@ export default function App() {
         )}
 
         {/* Categories / Bento Grid */}
-        {!searchQuery && (
+        {!searchQuery && activeTab !== 'admin' && (
           <section className="px-6 py-12 max-w-7xl mx-auto">
             <h3 className="text-2xl font-display font-bold mb-8">Explore Genres</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 h-[400px]">
@@ -379,9 +553,20 @@ export default function App() {
                   </div>
 
                   <div className="mt-auto flex gap-4">
-                    <button className="flex-1 bg-white text-black py-4 rounded-xl font-bold hover:bg-white/90 transition-colors flex items-center justify-center gap-2">
-                      <Play size={18} className="fill-current" /> Watch Now
-                    </button>
+                    {selectedMovie.trailer_url ? (
+                      <a 
+                        href={selectedMovie.trailer_url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="flex-1 bg-white text-black py-4 rounded-xl font-bold hover:bg-white/90 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Play size={18} className="fill-current" /> Watch Trailer
+                      </a>
+                    ) : (
+                      <button className="flex-1 bg-white text-black py-4 rounded-xl font-bold hover:bg-white/90 transition-colors flex items-center justify-center gap-2">
+                        <Play size={18} className="fill-current" /> Watch Now
+                      </button>
+                    )}
                     <button className="p-4 bg-white/5 rounded-xl border border-white/10 hover:bg-white/10 transition-colors">
                       <Calendar size={18} />
                     </button>

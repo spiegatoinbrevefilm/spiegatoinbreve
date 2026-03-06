@@ -15,4 +15,5 @@ export interface Movie {
   director?: string;
   cast?: string[];
   reviews?: string[];
+  trailer_url?: string;
 }
