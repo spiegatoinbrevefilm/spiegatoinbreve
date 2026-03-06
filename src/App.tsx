@@ -6,7 +6,13 @@ import Markdown from 'react-markdown';
 import { cn, Movie } from './utils';
 import { supabase } from './supabase';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const getAI = () => {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('VITE_GEMINI_API_KEY is not set. Please add it to your environment variables.');
+  }
+  return new GoogleGenAI({ apiKey });
+};
 
 const MOCK_MOVIES: Movie[] = [
   {
@@ -211,6 +217,9 @@ export default function App() {
     setAiResponse(null);
     
     try {
+      console.log("CLIENT: Starting AI search/import with query:", query);
+      console.log("CLIENT: Using model: gemini-3-flash-preview");
+      
       const prompt = activeTab === 'url' 
         ? `Extract movie details from this URL: ${query}. 
            CRITICAL: You must return ONLY a raw JSON object. DO NOT use markdown code blocks (no \`\`\`json). DO NOT include any introductory or concluding text. Just the raw JSON string.
@@ -219,6 +228,7 @@ export default function App() {
            If a field is missing, use an empty string.`
         : `Search for the movie "${query}" on portals like MyMovies.it, IMDb, and ComingSoon.it. Provide a comprehensive summary, the current rating consensus, and why it's recommended.`;
 
+      const ai = getAI();
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
@@ -228,13 +238,17 @@ export default function App() {
         }
       });
       
-      console.log("CLIENT: Raw AI Response:", response.text);
+      console.log("CLIENT: AI Response received:", response);
+      const responseText = response.text;
+      console.log("CLIENT: Raw AI Response Text:", responseText);
       
       if (activeTab === 'url') {
         try {
+          if (!responseText) throw new Error("Empty response from AI");
+          
           // Clean the response text from potential markdown code blocks
-          const cleanedText = response.text.replace(/```json\n?|```/g, '').trim();
-          console.log("CLIENT: Cleaned JSON text:", cleanedText);
+          const cleanedText = responseText.replace(/```json\n?|```/g, '').trim();
+          console.log("CLIENT: Cleaned JSON text for parsing:", cleanedText);
           const movieData = JSON.parse(cleanedText);
           
           setNewMovie({
@@ -244,24 +258,23 @@ export default function App() {
           setActiveTab('admin');
           setIsEditing(false);
           setEditingId(null);
-          setAiResponse(null); // Clear any previous AI response
+          setAiResponse(null);
           alert('Data imported! Review and save in the Back Office.');
         } catch (pErr) {
-          console.error('Parse error:', pErr);
-          // If parsing fails, show the raw response as a summary
-          setAiResponse(response.text);
+          console.error('CLIENT: Parse error:', pErr);
+          setAiResponse(responseText || 'Could not parse structured data.');
           alert('Could not parse structured data, showing summary instead.');
         }
       } else {
-        setAiResponse(response.text || 'No results found.');
+        setAiResponse(responseText || 'No results found.');
         const filtered = MOCK_MOVIES.filter(m => 
           m.title.toLowerCase().includes(query.toLowerCase())
         );
         setSearchResults(filtered);
       }
-    } catch (error) {
-      console.error('Search error:', error);
-      setAiResponse('Error fetching results. Please try again.');
+    } catch (error: any) {
+      console.error('CLIENT: Search error details:', error);
+      setAiResponse(`Error: ${error.message || 'Failed to fetch results'}. Please check your API key.`);
     } finally {
       setIsSearching(false);
     }
