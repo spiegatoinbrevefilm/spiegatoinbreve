@@ -99,8 +99,14 @@ export default function App() {
       
       if (error) throw error;
       
-      // Map data if necessary (e.g. cast is stored as JSON or array)
-      setMovies(data || []);
+      // Normalize data: ensure cast and genre are handled correctly if they come as strings or arrays
+      const normalizedData = (data || []).map((movie: any) => ({
+        ...movie,
+        cast: Array.isArray(movie.cast) ? movie.cast : (typeof movie.cast === 'string' ? movie.cast.split(',').map((s: string) => s.trim()) : []),
+        genre: Array.isArray(movie.genre) ? movie.genre.join(', ') : (movie.genre || '')
+      }));
+      
+      setMovies(normalizedData);
     } catch (err) {
       console.error('Failed to fetch movies:', err);
     }
@@ -298,6 +304,13 @@ export default function App() {
     } finally {
       setIsSearching(false);
     }
+  };
+
+  // Helper to safely render lists (cast, genre) that might be strings or arrays
+  const renderList = (val: any) => {
+    if (!val) return 'N/A';
+    if (Array.isArray(val)) return val.join(', ');
+    return val;
   };
 
   return (
@@ -805,22 +818,22 @@ export default function App() {
                   <div className="space-y-4 mb-8">
                     <div className="flex items-center gap-4 text-sm">
                       <span className="text-white/30 w-20">Genre</span>
-                      <span className="font-medium text-red-500">{selectedMovie.genre || 'N/A'}</span>
+                      <span className="font-medium text-red-500">{renderList(selectedMovie.genre)}</span>
                     </div>
                     <div className="flex items-center gap-4 text-sm">
                       <span className="text-white/30 w-20">Director</span>
-                      <span className="font-medium">{selectedMovie.director}</span>
+                      <span className="font-medium">{selectedMovie.director || 'N/A'}</span>
                     </div>
                     <div className="flex items-start gap-4 text-sm">
                       <span className="text-white/30 w-20">Cast</span>
-                      <span className="font-medium flex-1">{selectedMovie.cast?.join(', ')}</span>
+                      <span className="font-medium flex-1">{renderList(selectedMovie.cast)}</span>
                     </div>
                   </div>
 
                   <div className="mt-auto flex gap-4">
-                    {selectedMovie.trailer_url ? (
+                    {(selectedMovie.video_url || selectedMovie.trailer_url) ? (
                       <a 
-                        href={selectedMovie.trailer_url} 
+                        href={selectedMovie.video_url || selectedMovie.trailer_url} 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="flex-1 bg-white text-black py-4 rounded-xl font-bold hover:bg-white/90 transition-colors flex items-center justify-center gap-2"
@@ -828,8 +841,8 @@ export default function App() {
                         <Play size={18} className="fill-current" /> Watch Trailer
                       </a>
                     ) : (
-                      <button className="flex-1 bg-white text-black py-4 rounded-xl font-bold hover:bg-white/90 transition-colors flex items-center justify-center gap-2">
-                        <Play size={18} className="fill-current" /> Watch Now
+                      <button className="flex-1 bg-white text-black py-4 rounded-xl font-bold hover:bg-white/90 transition-colors flex items-center justify-center gap-2 opacity-50 cursor-not-allowed">
+                        <Play size={18} className="fill-current" /> No Trailer Available
                       </button>
                     )}
                     <button 
