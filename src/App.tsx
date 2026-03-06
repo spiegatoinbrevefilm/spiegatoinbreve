@@ -213,57 +213,77 @@ export default function App() {
     const query = activeTab === 'search' ? searchQuery : urlToFetch;
     if (!query.trim()) return;
 
+    const isUrl = query.startsWith('http://') || query.startsWith('https://');
+    const effectiveTab = isUrl ? 'url' : activeTab;
+
     setIsSearching(true);
     setAiResponse(null);
     
     try {
-      console.log("CLIENT: Starting AI search/import with query:", query);
-      console.log("CLIENT: Using model: gemini-3-flash-preview");
+      console.log("CLIENT: Starting AI search/import with query:", query, "Effective Tab:", effectiveTab);
+      const ai = getAI();
       
-      const prompt = activeTab === 'url' 
+      const prompt = effectiveTab === 'url' 
         ? `Extract movie details from this URL: ${query}. 
-           CRITICAL: You must return ONLY a raw JSON object. DO NOT use markdown code blocks (no \`\`\`json). DO NOT include any introductory or concluding text. Just the raw JSON string.
-           Fields: title, year, rating, image, description, director, cast (array of strings), video_url, genre.
+           Return a JSON object with these fields: title, year, rating, image, description, director, cast (array of strings), video_url, genre.
            is_featured should be false.
            If a field is missing, use an empty string.`
         : `Search for the movie "${query}" on portals like MyMovies.it, IMDb, and ComingSoon.it. Provide a comprehensive summary, the current rating consensus, and why it's recommended.`;
 
-      const ai = getAI();
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt,
         config: {
-          tools: activeTab === 'url' ? [{ urlContext: {} }] : [{ googleSearch: {} }],
-          responseMimeType: activeTab === 'url' ? "application/json" : "text/plain"
+          systemInstruction: effectiveTab === 'url' 
+            ? "You are a movie data extractor. You MUST return ONLY a valid JSON object. No markdown code blocks, no preamble, no explanation. Just the raw JSON starting with { and ending with }. Example: {\"title\": \"Movie Title\", \"year\": \"2024\", ...}" 
+            : "You are a movie expert providing summaries and reviews.",
+          tools: effectiveTab === 'url' ? [{ urlContext: {} }] : [{ googleSearch: {} }],
+          responseMimeType: effectiveTab === 'url' ? "application/json" : "text/plain"
         }
       });
       
-      console.log("CLIENT: AI Response received:", response);
-      const responseText = response.text;
+      const responseText = response.text || '';
       console.log("CLIENT: Raw AI Response Text:", responseText);
       
-      if (activeTab === 'url') {
+      if (effectiveTab === 'url') {
         try {
-          if (!responseText) throw new Error("Empty response from AI");
+          let jsonStr = responseText.trim();
+          // Remove markdown code blocks if present
+          jsonStr = jsonStr.replace(/```json\s?|```/g, '').trim();
           
-          // Clean the response text from potential markdown code blocks
-          const cleanedText = responseText.replace(/```json\n?|```/g, '').trim();
-          console.log("CLIENT: Cleaned JSON text for parsing:", cleanedText);
-          const movieData = JSON.parse(cleanedText);
+          const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            jsonStr = jsonMatch[0];
+          }
+          
+          const movieData = JSON.parse(jsonStr);
+          console.log("CLIENT: Parsed Movie Data:", movieData);
           
           setNewMovie({
-            ...movieData,
-            cast: Array.isArray(movieData.cast) ? movieData.cast.join(', ') : (movieData.cast || '')
+            title: movieData.title || '',
+            year: movieData.year || '',
+            rating: movieData.rating || '',
+            image: movieData.image || 'https://picsum.photos/seed/movie/800/1200',
+            description: movieData.description || '',
+            director: movieData.director || '',
+            cast: Array.isArray(movieData.cast) ? movieData.cast.join(', ') : (movieData.cast || ''),
+            video_url: movieData.video_url || '',
+            genre: movieData.genre || '',
+            is_featured: false
           });
+          
           setActiveTab('admin');
           setIsEditing(false);
           setEditingId(null);
           setAiResponse(null);
-          alert('Data imported! Review and save in the Back Office.');
+          setUrlToFetch('');
+          setSearchQuery('');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          alert('✅ Dati importati con successo! Controlla i campi nel Back Office e clicca su "Save to Database".');
         } catch (pErr) {
           console.error('CLIENT: Parse error:', pErr);
-          setAiResponse(responseText || 'Could not parse structured data.');
-          alert('Could not parse structured data, showing summary instead.');
+          setAiResponse(responseText);
+          alert('⚠️ Non è stato possibile estrarre i dati strutturati automaticamente. Ho generato un riassunto qui sotto che puoi usare per compilare i campi manualmente.');
         }
       } else {
         setAiResponse(responseText || 'No results found.');
@@ -274,7 +294,7 @@ export default function App() {
       }
     } catch (error: any) {
       console.error('CLIENT: Search error details:', error);
-      setAiResponse(`Error: ${error.message || 'Failed to fetch results'}. Please check your API key.`);
+      setAiResponse(`Error: ${error.message || 'Failed to fetch results'}.`);
     } finally {
       setIsSearching(false);
     }
@@ -581,17 +601,17 @@ export default function App() {
         )}
 
         {/* Search Results / AI Insights */}
-        {(searchQuery || aiResponse) && (
+        {(searchQuery || urlToFetch || aiResponse) && (
           <section className="px-6 py-12 max-w-7xl mx-auto">
             <div className="flex items-center justify-between mb-8">
               <h3 className="text-2xl font-display font-bold">
-                {isSearching ? 'Searching...' : `Results for "${searchQuery}"`}
+                {isSearching ? 'Processing...' : (activeTab === 'url' ? 'Import Results' : `Results for "${searchQuery}"`)}
               </h3>
               <button 
-                onClick={() => {setSearchQuery(''); setAiResponse(null); setSearchResults([]);}}
+                onClick={() => {setSearchQuery(''); setUrlToFetch(''); setAiResponse(null); setSearchResults([]);}}
                 className="text-white/40 hover:text-white text-sm"
               >
-                Clear Search
+                Clear
               </button>
             </div>
 
